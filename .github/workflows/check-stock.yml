@@ -38,17 +38,32 @@ jobs:
             PREV_STATUS=$(grep "^${KEY}=" status.txt | cut -d= -f2)
             [ -z "$PREV_STATUS" ] && PREV_STATUS="OUT"
 
-            HTML=$(curl -sL -A "$UA" "$URL" || true)
+            HTTP_CODE=$(curl -sL -o /tmp/page.html -w "%{http_code}" -A "$UA" "$URL" || echo "000")
+            HTML=$(cat /tmp/page.html 2>/dev/null || true)
+            LEN=${#HTML}
 
-            if [ -z "$HTML" ]; then
-              echo "$LABEL: empty response, skipping this run."
+            echo "$LABEL: http=$HTTP_CODE len=$LEN"
+
+            if [ "$HTTP_CODE" != "200" ] || [ "$LEN" -lt 1000 ]; then
+              echo "$LABEL: fetch looked invalid (http=$HTTP_CODE, len=$LEN) — skipping this cycle, keeping status $PREV_STATUS."
               continue
             fi
 
-            if echo "$HTML" | grep -qi "sold out"; then
+            HAS_SOLDOUT=0
+            echo "$HTML" | grep -qi "sold out" && HAS_SOLDOUT=1
+
+            HAS_ADDCART=0
+            echo "$HTML" | grep -qiE "add to cart|add-to-cart|addtocart" && HAS_ADDCART=1
+
+            echo "$LABEL: sold_out_marker=$HAS_SOLDOUT add_to_cart_marker=$HAS_ADDCART"
+
+            if [ "$HAS_SOLDOUT" = "1" ]; then
               NEW_STATUS="OUT"
-            else
+            elif [ "$HAS_ADDCART" = "1" ]; then
               NEW_STATUS="IN"
+            else
+              echo "$LABEL: ambiguous page content (neither marker found) — keeping previous status ($PREV_STATUS) to avoid a false alert."
+              NEW_STATUS="$PREV_STATUS"
             fi
 
             echo "$LABEL — previous: $PREV_STATUS, new: $NEW_STATUS"
