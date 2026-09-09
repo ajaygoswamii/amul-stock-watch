@@ -1,18 +1,45 @@
 name: Check Amul Lassi Stock
 
 on:
-  workflow_dispatch: {}
+  schedule:
+    # every 10 minutes
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}   # lets you trigger a manual test run from the Actions tab
+
+permissions:
+  contents: write   # needed so the workflow can commit the updated status.txt
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Debug fetch
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
         run: |
-          curl -sL -D /tmp/headers.txt -o /tmp/page.html -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" -H "Accept-Language: en-US,en;q=0.9" "https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30"
-          echo "--- HEADERS ---"
-          cat /tmp/headers.txt
-          echo "--- LENGTH ---"
-          wc -c /tmp/page.html
-          echo "--- SNIPPET ---"
-          head -c 1500 /tmp/page.html
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.47.0 >/dev/null 2>&1
+          npx playwright install --with-deps chromium
+
+      - name: Check stock (real browser render) and notify
+        env:
+          NTFY_TOPIC: amul-lassi-ir-f3f4ec47
+        run: node check.js
+
+      - name: Commit status if changed
+        run: |
+          if [ "$(cat CHANGED_FLAG 2>/dev/null)" = "1" ]; then
+            rm -f CHANGED_FLAG
+            git config user.name "amul-stock-bot"
+            git config user.email "actions@github.com"
+            git add status.txt
+            git commit -m "status update ($(date -u +%FT%TZ))"
+            git push
+          else
+            rm -f CHANGED_FLAG
+            echo "No status change."
+          fi
