@@ -1,0 +1,82 @@
+name: Check Amul Lassi Stock
+
+on:
+  schedule:
+    # every 10 minutes
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}   # lets you trigger a manual test run from the Actions tab
+
+permissions:
+  contents: write   # needed so the workflow can commit the updated status.txt
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check stock and notify
+        env:
+          NTFY_TOPIC: amul-lassi-ir-f3f4ec47
+        run: |
+          set -e
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+          # key|label|url  — add more lines here to watch more products
+          PRODUCTS='
+          LASSI_PLAIN|Amul High Protein Plain Lassi (Pack of 30)|https://shop.amul.com/en/product/amul-high-protein-plain-lassi-200-ml-or-pack-of-30
+          LASSI_ROSE|Amul High Protein Rose Lassi (Pack of 30)|https://shop.amul.com/en/product/amul-high-protein-rose-lassi-200-ml-or-pack-of-30
+          '
+
+          touch status.txt
+          CHANGED=0
+
+          while IFS='|' read -r KEY LABEL URL; do
+            [ -z "$KEY" ] && continue
+
+            PREV_STATUS=$(grep "^${KEY}=" status.txt | cut -d= -f2)
+            [ -z "$PREV_STATUS" ] && PREV_STATUS="OUT"
+
+            HTML=$(curl -sL -A "$UA" "$URL" || true)
+
+            if [ -z "$HTML" ]; then
+              echo "$LABEL: empty response, skipping this run."
+              continue
+            fi
+
+            if echo "$HTML" | grep -qi "sold out"; then
+              NEW_STATUS="OUT"
+            else
+              NEW_STATUS="IN"
+            fi
+
+            echo "$LABEL — previous: $PREV_STATUS, new: $NEW_STATUS"
+
+            if [ "$NEW_STATUS" = "IN" ] && [ "$PREV_STATUS" != "IN" ]; then
+              echo "$LABEL went IN STOCK — sending notification."
+              curl -sS \
+                -H "Title: $LABEL IN STOCK" \
+                -H "Priority: urgent" \
+                -H "Tags: rotating_light" \
+                -d "$LABEL is in stock. Buy now: $URL" \
+                "https://ntfy.sh/$NTFY_TOPIC"
+            fi
+
+            if [ "$NEW_STATUS" != "$PREV_STATUS" ]; then
+              if grep -q "^${KEY}=" status.txt; then
+                sed -i "s/^${KEY}=.*/${KEY}=${NEW_STATUS}/" status.txt
+              else
+                echo "${KEY}=${NEW_STATUS}" >> status.txt
+              fi
+              CHANGED=1
+            fi
+          done <<< "$PRODUCTS"
+
+          if [ "$CHANGED" = "1" ]; then
+            git config user.name "amul-stock-bot"
+            git config user.email "actions@github.com"
+            git add status.txt
+            git commit -m "status update ($(date -u +%FT%TZ))"
+            git push
+          fi
